@@ -7,15 +7,14 @@ https://tech.yandex.com/weather/
 import asyncio
 import logging
 import socket
-from datetime import timedelta
+from datetime import datetime, timedelta
 
 import aiohttp
 import async_timeout
 import voluptuous as vol
 import homeassistant.util.dt as dt_util
 
-import functools
-import time
+from functools import lru_cache, wraps
 
 from homeassistant.const import (
     CONF_NAME, CONF_API_KEY, CONF_LATITUDE, CONF_LONGITUDE, TEMP_CELSIUS, STATE_UNKNOWN)
@@ -285,26 +284,24 @@ class YaWeather(object):
         self._session = session
         self._current = None
         self._forecast = None
+        
+    def time_cache(seconds, maxsize: int = 128):
+        def wrapper_cache(func):
+            func = lru_cache(maxsize=maxsize)(func)
+            func.lifetime = timedelta(seconds=seconds)
+            func.expiration = datetime.utcnow() + func.lifetime
 
-    def time_cache(max_age, maxsize=128, typed=False):
-        """Least-recently-used cache decorator with time-based cache invalidation.
-        Args:
-            max_age: Time to live for cached results (in seconds).
-            maxsize: Maximum cache size (see `functools.lru_cache`).
-            typed: Cache on distinct input types (see `functools.lru_cache`).
-        """
-        def _decorator(fn):
-            @functools.lru_cache(maxsize=maxsize, typed=typed)
-            def _new(*args, __time_salt, **kwargs):
-                return fn(*args, **kwargs)
+            @wraps(func)
+            def wrapped_func(*args, **kwargs):
+                if datetime.utcnow() >= func.expiration:
+                    func.cache_clear()
+                    func.expiration = datetime.utcnow() + func.lifetime
 
-            @functools.wraps(fn)
-            def _wrapped(*args, **kwargs):
-                return _new(*args, **kwargs, __time_salt=int(time.time() / max_age))
+                return func(*args, **kwargs)
 
-            return _wrapped
+            return wrapped_func
 
-        return _decorator
+        return wrapper_cache
 
     @time_cache(1800)
     async def get_weather(self):
